@@ -27,6 +27,46 @@ bash exec_iemocap.sh
 bash exec_meld.sh
 ```
 
+## Integrated RAG-VAD Reasoning Fusion
+This project uses one integrated reasoning path:
+`multimodal RAG retrieval -> Qwen2.5 reasoning -> VAD/appraisal + modality reliability -> cognitive residual SDT fusion -> VAD-aware contrastive training`.
+
+Supported labels:
+- IEMOCAP: `happy`, `sad`, `neutral`, `angry`, `excited`, `frustrated`
+- MELD: `neutral`, `surprise`, `fear`, `sadness`, `joy`, `disgust`, `anger`
+
+Export utterance-level prompts from the preprocessed dataset:
+```console
+/home/zzb/anaconda3/envs/ten_1/bin/python export_llm_prompts.py \
+  --Dataset IEMOCAP \
+  --output data/iemocap_llm_prompts.jsonl
+```
+
+Generate the integrated cache. Each record stores the prediction, VAD/appraisal, modality hint, current audio/visual statistics, retrieved training examples, and retrieval quality. Use a fresh output file for the multimodal RAG version instead of resuming an older text-only cache:
+```console
+CUDA_VISIBLE_DEVICES=1 /home/zzb/anaconda3/envs/ten_1/bin/python generate_llm_reasoning_rag.py \
+  --Dataset IEMOCAP \
+  --prompts data/iemocap_llm_prompts.jsonl \
+  --output data/iemocap_llm_reasoning_mmrag.jsonl \
+  --model-path /data/LLM/Qwen2.5-7B-Instruct \
+  --rag-k 5 \
+  --context-window 3 \
+  --text-rag-weight 0.7 \
+  --dtype bf16 \
+  --resume
+```
+
+Train SDT with cognitive residual fusion. RAG quality weights LLM distillation, VAD plus modality hints supervise the reliability gate, and VAD-aware contrastive learning separates common confusing emotion pairs:
+```console
+CUDA_VISIBLE_DEVICES=1 /home/zzb/anaconda3/envs/ten_1/bin/python -u train.py \
+  --Dataset IEMOCAP \
+  --llm-cache data/iemocap_llm_reasoning_mmrag.jsonl \
+  --use-llm-reasoning \
+  --llm-loss-weight 0.01 \
+  --llm-reliability-weight 0.005 \
+  --vad-contrast-weight 0.003
+```
+
 ## Acknowledgements
 - Special thanks to the [COSMIC](https://github.com/declare-lab/conv-emotion) and [MMGCN](https://github.com/hujingwen6666/MMGCN) for sharing their codes and datasets.
 

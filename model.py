@@ -12,7 +12,7 @@ class MaskedKLDivLoss(nn.Module):
 
     def forward(self, log_pred, target, mask):
         mask_ = mask.view(-1, 1)
-        loss = self.loss(log_pred * mask_, target * mask_) / torch.sum(mask)   
+        loss = self.loss(log_pred * mask_, target * mask_) / torch.sum(mask)
         return loss
 
 
@@ -205,13 +205,80 @@ class Multimodal_GatedFusion(nn.Module):
         final_rep = torch.sum(utters_three_model, dim=-2, keepdim=False)
         return final_rep
 
+
+class ReasoningAwareReliabilityFusion(nn.Module):
+    def __init__(self, hidden_size, llm_feature_dim, n_classes, residual_init=0.05):
+        super(ReasoningAwareReliabilityFusion, self).__init__()
+        self.hidden_size = hidden_size
+        self.n_classes = n_classes
+        self.llm_proj = nn.Sequential(
+            nn.Linear(llm_feature_dim, hidden_size),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_size)
+        )
+        self.reliability_gate = nn.Linear(hidden_size * 4, 4)
+        self.hint_to_gate = nn.Linear(4, 4, bias=False)
+        self.vad_to_gate = nn.Linear(7, 4, bias=False)
+        self.residual_controller = nn.Linear(2, 1)
+        residual_init = min(max(residual_init, 1e-4), 0.99)
+        self.residual_logit = nn.Parameter(torch.logit(torch.tensor(residual_init, dtype=torch.float)))
+        nn.init.zeros_(self.residual_controller.weight)
+        nn.init.zeros_(self.residual_controller.bias)
+        self.last_weights = None
+        self.last_alpha = None
+
+    def forward(self, text_rep, audio_rep, visual_rep, llm_features=None, llm_mask=None):
+        if llm_features is None:
+            return None, None, None
+
+        llm_rep = self.llm_proj(llm_features)
+        logits = self.reliability_gate(torch.cat([text_rep, audio_rep, visual_rep, llm_rep], dim=-1))
+
+        appraisal = llm_features[:, :, self.n_classes:self.n_classes + 4]
+        modality_hint = llm_features[:, :, self.n_classes + 4:self.n_classes + 7]
+        confidence = llm_features[:, :, self.n_classes + 7:self.n_classes + 8]
+        if llm_features.size(-1) > self.n_classes + 8:
+            rag_quality = llm_features[:, :, self.n_classes + 8:self.n_classes + 9]
+        else:
+            rag_quality = confidence * 0.75
+        if llm_features.size(-1) > self.n_classes + 9:
+            vad_guidance = llm_features[:, :, self.n_classes + 9:self.n_classes + 12]
+        else:
+            vad_guidance = torch.zeros_like(modality_hint)
+
+        reasoning_trust = confidence * (0.5 + 0.5 * rag_quality)
+        hint = torch.cat([modality_hint, reasoning_trust], dim=-1)
+        logits = logits + self.hint_to_gate(hint)
+        logits = logits + self.vad_to_gate(torch.cat([appraisal, vad_guidance], dim=-1))
+
+        if llm_mask is not None:
+            logits[:, :, 3] = logits[:, :, 3].masked_fill(llm_mask.eq(0), -1e4)
+
+        weights = F.softmax(logits, dim=-1)
+        fused = weights[:, :, 0:1] * text_rep + \
+                weights[:, :, 1:2] * audio_rep + \
+                weights[:, :, 2:3] * visual_rep + \
+                weights[:, :, 3:4] * llm_rep
+        self.last_weights = weights
+        quality_alpha = torch.sigmoid(self.residual_controller(torch.cat([confidence, rag_quality], dim=-1)))
+        alpha = torch.sigmoid(self.residual_logit) * (0.5 + quality_alpha) * reasoning_trust
+        if llm_mask is not None:
+            alpha = alpha * llm_mask.unsqueeze(-1)
+        self.last_alpha = alpha
+        return fused, weights, alpha
+
+
 class Transformer_Based_Model(nn.Module):
     def __init__(self, dataset, temp, D_text, D_visual, D_audio, n_head,
-                 n_classes, hidden_dim, n_speakers, dropout):
+                 n_classes, hidden_dim, n_speakers, dropout, llm_feature_dim=0,
+                 use_llm_reasoning=False, llm_residual_init=0.05):
         super(Transformer_Based_Model, self).__init__()
         self.temp = temp
         self.n_classes = n_classes
         self.n_speakers = n_speakers
+        self.use_llm_reasoning = use_llm_reasoning
+        self.last_reliability_weights = None
+        self.last_contrast_features = None
         if self.n_speakers == 2:
             padding_idx = 2
         if self.n_speakers == 9:
@@ -255,6 +322,11 @@ class Transformer_Based_Model(nn.Module):
 
         # Multimodal-level Gated Fusion
         self.last_gate = Multimodal_GatedFusion(hidden_dim)
+        if self.use_llm_reasoning:
+            self.reasoning_fusion = ReasoningAwareReliabilityFusion(
+                hidden_dim, llm_feature_dim, n_classes, residual_init=llm_residual_init)
+        else:
+            self.reasoning_fusion = None
 
         # Emotion Classifier
         self.t_output_layer = nn.Sequential(
@@ -274,15 +346,15 @@ class Transformer_Based_Model(nn.Module):
             )
         self.all_output_layer = nn.Linear(hidden_dim, n_classes)
 
-    def forward(self, textf, visuf, acouf, u_mask, qmask, dia_len):
+    def forward(self, textf, visuf, acouf, u_mask, qmask, dia_len, llm_features=None, llm_mask=None):
         spk_idx = torch.argmax(qmask, -1)
         origin_spk_idx = spk_idx
         if self.n_speakers == 2:
             for i, x in enumerate(dia_len):
-                spk_idx[i, x:] = (2*torch.ones(origin_spk_idx[i].size(0)-x)).int().cuda()
+                spk_idx[i, x:] = (2*torch.ones(origin_spk_idx[i].size(0)-x)).int().to(spk_idx.device)
         if self.n_speakers == 9:
             for i, x in enumerate(dia_len):
-                spk_idx[i, x:] = (9*torch.ones(origin_spk_idx[i].size(0)-x)).int().cuda()
+                spk_idx[i, x:] = (9*torch.ones(origin_spk_idx[i].size(0)-x)).int().to(spk_idx.device)
         spk_embeddings = self.speaker_embeddings(spk_idx)
 
         # Temporal convolutional layers
@@ -322,6 +394,17 @@ class Transformer_Based_Model(nn.Module):
 
         # Multimodal-level Gated Fusion
         all_transformer_out = self.last_gate(t_transformer_out, a_transformer_out, v_transformer_out)
+        self.last_reliability_weights = None
+        self.last_contrast_features = None
+        if self.reasoning_fusion is not None and llm_features is not None:
+            reasoning_out, reasoning_weights, reasoning_alpha = self.reasoning_fusion(
+                t_transformer_out, a_transformer_out, v_transformer_out,
+                llm_features=llm_features, llm_mask=llm_mask)
+            if reasoning_out is not None:
+                all_transformer_out = all_transformer_out + reasoning_alpha * (reasoning_out - all_transformer_out)
+                self.last_reliability_weights = reasoning_weights
+
+        self.last_contrast_features = all_transformer_out
 
         # Emotion Classifier
         t_final_out = self.t_output_layer(t_transformer_out)
