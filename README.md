@@ -1,10 +1,10 @@
-# SDT
+# TEN
 This repository is the implementation for our paper *[A Transformer-based Model with Self-distillation for Multimodal Emotion Recognition in Conversations](https://ieeexplore.ieee.org/abstract/document/10109845)*.
 
 ## Model Architecture
-<!-- ![Image of SDT](fig/SDT.jpg) -->
+<!-- ![Image of TEN](fig/TEN.jpg) -->
 <div align="center">
-    <img src="fig/SDT.jpg" width="85%" title="SDT."</img>
+    <img src="fig/TEN.jpg" width="85%" title="TEN."</img>
 </div>
 
 ## Setup
@@ -15,7 +15,7 @@ pip install -r requirements.txt
 ```
 - Download the preprocessed datasets from [here](https://drive.google.com/drive/folders/1J1mvbqQmVodNBzbiOIxRiWOtkP6qqP-K?usp=sharing), and put them into `data/`.
 
-## Run SDT model
+## Run TEN model
 - Run the model on IEMOCAP dataset:
 ```console
 
@@ -29,7 +29,7 @@ bash exec_meld.sh
 
 ## Integrated RAG-VAD Reasoning Fusion
 This project uses one integrated reasoning path:
-`multimodal RAG retrieval -> Qwen2.5 reasoning -> VAD/appraisal + modality reliability -> cognitive residual SDT fusion -> VAD-aware contrastive training`.
+`multimodal RAG retrieval -> Qwen2.5 reasoning -> VAD/appraisal + modality reliability -> cognitive residual TEN fusion -> VAD-aware contrastive training`.
 
 Supported labels:
 - IEMOCAP: `happy`, `sad`, `neutral`, `angry`, `excited`, `frustrated`
@@ -56,7 +56,7 @@ CUDA_VISIBLE_DEVICES=1 /home/zzb/anaconda3/envs/ten_1/bin/python generate_llm_re
   --resume
 ```
 
-Train SDT with cognitive residual fusion. RAG quality weights LLM distillation, VAD plus modality hints supervise the reliability gate, and VAD-aware contrastive learning separates common confusing emotion pairs:
+Train TEN with cognitive residual fusion. RAG quality weights LLM distillation, VAD plus modality hints supervise the reliability gate, and VAD-aware contrastive learning separates common confusing emotion pairs:
 ```console
 CUDA_VISIBLE_DEVICES=1 /home/zzb/anaconda3/envs/ten_1/bin/python -u train.py \
   --Dataset IEMOCAP \
@@ -73,7 +73,7 @@ CUDA_VISIBLE_DEVICES=1 /home/zzb/anaconda3/envs/ten_1/bin/python -u train.py \
 ## Citation
 If you find our work useful for your research, please kindly cite our paper. Thanks!
 ```
-@article{ma2024sdt,
+@article{ma2024ten,
   author={Ma, Hui and Wang, Jian and Lin, Hongfei and Zhang, Bo and Zhang, Yijia and Xu, Bo},
   journal={IEEE Transactions on Multimedia}, 
   title={A Transformer-Based Model With Self-Distillation for Multimodal Emotion Recognition in Conversations}, 
