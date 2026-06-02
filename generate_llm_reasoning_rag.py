@@ -220,31 +220,58 @@ def build_model(args):
         dtype = torch.float16
     else:
         dtype = torch.float32
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_path,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-        local_files_only=True,
-        trust_remote_code=True,
-    )
-    if torch.cuda.is_available() and not args.cpu:
+    model_kwargs = {
+        'torch_dtype': dtype,
+        'low_cpu_mem_usage': True,
+        'local_files_only': True,
+        'trust_remote_code': True,
+    }
+    if args.device_map:
+        model_kwargs['device_map'] = args.device_map
+    model = AutoModelForCausalLM.from_pretrained(args.model_path, **model_kwargs)
+    if torch.cuda.is_available() and not args.cpu and not args.device_map:
         model = model.cuda()
     model.eval()
     return tokenizer, model
 
 
-def generate_one(tokenizer, model, item, labels, args):
+def model_input_device(model):
     import torch
 
+    if hasattr(model, 'hf_device_map'):
+        for device in model.hf_device_map.values():
+            device = str(device)
+            if device not in ('cpu', 'disk'):
+                if device.isdigit():
+                    device = 'cuda:{}'.format(device)
+                return torch.device(device)
+    return next(model.parameters()).device
+
+
+def build_prompt(tokenizer, item, labels):
     messages = build_messages(item, labels)
     if hasattr(tokenizer, 'apply_chat_template'):
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    else:
-        prompt = messages[0]['content'] + '\n\n' + messages[1]['content']
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return messages[0]['content'] + '\n\n' + messages[1]['content']
 
-    inputs = tokenizer(prompt, return_tensors='pt', truncation=True, max_length=args.max_input_tokens)
-    if next(model.parameters()).is_cuda:
-        inputs = dict((k, v.cuda()) for k, v in inputs.items())
+
+def generate_batch(tokenizer, model, items, labels, args):
+    import torch
+
+    prompts = [build_prompt(tokenizer, item, labels) for item in items]
+    old_padding_side = getattr(tokenizer, 'padding_side', 'right')
+    tokenizer.padding_side = 'left'
+    inputs = tokenizer(
+        prompts,
+        return_tensors='pt',
+        truncation=True,
+        max_length=args.max_input_tokens,
+        padding=True,
+    )
+    tokenizer.padding_side = old_padding_side
+    device = model_input_device(model)
+    if device.type == 'cuda':
+        inputs = dict((k, v.to(device)) for k, v in inputs.items())
 
     with torch.no_grad():
         outputs = model.generate(
@@ -256,8 +283,16 @@ def generate_one(tokenizer, model, item, labels, args):
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
-    generated = outputs[0][inputs['input_ids'].shape[-1]:]
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    prompt_length = inputs['input_ids'].shape[-1]
+    responses = []
+    for output in outputs:
+        generated = output[prompt_length:]
+        responses.append(tokenizer.decode(generated, skip_special_tokens=True).strip())
+    return responses
+
+
+def generate_one(tokenizer, model, item, labels, args):
+    return generate_batch(tokenizer, model, [item], labels, args)[0]
 
 
 def load_raw_dataset(dataset, path):
@@ -518,35 +553,45 @@ def main(args):
     started = time.time()
 
     with open(args.output, mode) as f:
-        for idx, item in enumerate(prompts, 1):
-            item = attach_current_stats(item, raw_data)
-            examples = retrieve_examples(
-                item, vectorizer, matrix, stat_matrix, stat_mean, stat_std,
-                records, args.rag_k, args.text_rag_weight)
-            rag_item = dict(item)
-            rag_item['prompt'] = build_rag_prompt(item, examples)
-            response = generate_one(tokenizer, model, rag_item, labels, args)
-            label, confidence, rationale, appraisal, modality_hint = parse_response(response, labels, args.default_confidence)
-            rag_quality = retrieval_quality(examples, label)
-            record = {
-                'vid': item['vid'],
-                'turn_id': item['turn_id'],
-                'label': label,
-                'confidence': confidence,
-                'rationale': rationale,
-                'appraisal': appraisal,
-                'modality_hint': modality_hint,
-                'multimodal_stats': item.get('multimodal_stats', {}),
-                'reasoning_quality': rag_quality,
-                'retrieved_examples': examples,
-                'raw_response': response,
-            }
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        for start in range(0, len(prompts), args.generation_batch_size):
+            batch = prompts[start:start + args.generation_batch_size]
+            prepared = []
+            for item in batch:
+                item = attach_current_stats(item, raw_data)
+                examples = retrieve_examples(
+                    item, vectorizer, matrix, stat_matrix, stat_mean, stat_std,
+                    records, args.rag_k, args.text_rag_weight)
+                rag_item = dict(item)
+                rag_item['prompt'] = build_rag_prompt(item, examples)
+                prepared.append((item, examples, rag_item))
+
+            responses = generate_batch(tokenizer, model, [entry[2] for entry in prepared], labels, args)
+
+            for offset, (item, examples, rag_item) in enumerate(prepared):
+                idx = start + offset + 1
+                response = responses[offset]
+                label, confidence, rationale, appraisal, modality_hint = parse_response(response, labels, args.default_confidence)
+                rag_quality = retrieval_quality(examples, label)
+                record = {
+                    'vid': item['vid'],
+                    'turn_id': item['turn_id'],
+                    'label': label,
+                    'confidence': confidence,
+                    'rationale': rationale,
+                    'appraisal': appraisal,
+                    'modality_hint': modality_hint,
+                    'multimodal_stats': item.get('multimodal_stats', {}),
+                    'reasoning_quality': rag_quality,
+                    'retrieved_examples': examples,
+                    'raw_response': response,
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
             f.flush()
 
-            if idx % args.log_every == 0:
+            done_count = min(start + len(batch), len(prompts))
+            if done_count % args.log_every == 0 or done_count == len(prompts):
                 elapsed = round(time.time() - started, 2)
-                print('generated {}/{} RAG records, elapsed {} sec'.format(idx, len(prompts), elapsed))
+                print('generated {}/{} RAG records, elapsed {} sec'.format(done_count, len(prompts), elapsed))
 
     print('saved {} new RAG reasoning records to {}'.format(len(prompts), args.output))
 
@@ -564,9 +609,11 @@ if __name__ == '__main__':
     parser.add_argument('--limit', type=int, default=None)
     parser.add_argument('--resume', action='store_true', default=False)
     parser.add_argument('--cpu', action='store_true', default=False)
+    parser.add_argument('--device-map', default='', help='device map for large LLMs, e.g. auto for multi-GPU inference')
     parser.add_argument('--dtype', default='bf16', choices=['bf16', 'fp16', 'fp32'])
     parser.add_argument('--max-input-tokens', type=int, default=4096)
     parser.add_argument('--max-new-tokens', type=int, default=160)
+    parser.add_argument('--generation-batch-size', type=int, default=1, help='number of prompts generated together; increase for faster throughput when memory allows')
     parser.add_argument('--temperature', type=float, default=0.0)
     parser.add_argument('--top-p', type=float, default=0.9)
     parser.add_argument('--default-confidence', type=float, default=0.85)

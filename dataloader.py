@@ -9,7 +9,7 @@ class IEMOCAPDataset(Dataset):
         self.videoIDs, self.videoSpeakers, self.videoLabels, self.videoText,\
         self.roberta2, self.roberta3, self.roberta4, \
         self.videoAudio, self.videoVisual, self.videoSentence, self.trainVid,\
-        self.testVid = pickle.load(open('data/iemocap_multimodal_features.pkl', 'rb'), encoding='latin1')
+        self.testVid = pickle.load(open('/data/zzb/BaseLine/SDT/data/iemocap_multimodal_features.pkl', 'rb'), encoding='latin1')
         self.keys = [x for x in (self.trainVid if train else self.testVid)]
 
         self.len = len(self.keys)
@@ -40,7 +40,7 @@ class MELDDataset(Dataset):
         self.videoAudio, self.videoVisual, self.videoSentence, self.trainVid,\
         self.testVid, _ = pickle.load(open(path, 'rb'))
         
-        self.data_t = torch.load('/data/zzb/BaseLine/nine/emotrans/CheckPoints/_meld/merged_all_features_shifted_2028.pt', map_location='cpu')
+        self.data_t = torch.load('/data/zzb/BaseLine/nine/emotrans/CheckPoints/_meld/merged_all_features_shifted_2029.pt', map_location='cpu')
 
         self.keys = [x for x in (self.trainVid if train else self.testVid)]
 

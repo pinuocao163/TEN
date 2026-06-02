@@ -1,0 +1,3 @@
+(base) zzb@amax:/data/zzb/BaseLine/ten/SDT$ /home/zzb/anaconda3/envs/ten_1/bin/python -c "import torch, transformers; print('torch', torch.__version__); print('transformers', transformers.__version__)"
+torch 2.3.1+cu121
+transformers 4.43.1

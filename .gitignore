@@ -4,3 +4,8 @@
 
 *.pk
 *.pkl
+result/
+data/*_qwen25_*_instruct_mmrag.jsonl
+data/*_llama31_*_instruct_mmrag.jsonl
+data/*_mistral7b_instruct_v03_mmrag.jsonl
+data/*_internlm3_*_instruct_mmrag.jsonl

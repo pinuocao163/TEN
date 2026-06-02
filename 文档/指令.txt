@@ -1,0 +1,35 @@
+cd /data/zzb/BaseLine/ten/SDT
+CUDA_VISIBLE_DEVICES=0 /home/zzb/anaconda3/envs/wxy/bin/python -u train.py \
+  --Dataset IEMOCAP \
+  --epochs 150 \
+  --batch-size 16 \
+  --temp 1 \
+  --lr 0.0001 \
+  --llm-cache data/iemocap_llm_reasoning_mmrag.jsonl \
+  --use-llm-reasoning \
+  --llm-loss-weight 0.00005 \
+  --llm-reliability-weight 0.0001 \
+  --vad-contrast-weight 0.00002 \
+  --llm-residual-init 0.01 \
+  --llm-min-quality 0.60 \
+  --llm-min-confidence 0.85 \
+  --grad-clip 0.0
+
+
+
+
+cd /data/zzb/BaseLine/ten/SDT
+CUDA_VISIBLE_DEVICES=0 /home/zzb/anaconda3/envs/wxy/bin/python -u train.py \
+  --Dataset MELD \
+  --epochs 150 \
+  --batch-size 16 \
+  --temp 1 \
+  --lr 0.00005 \
+  --llm-cache data/meld_llm_reasoning_mmrag.jsonl \
+  --use-llm-reasoning \
+  --llm-loss-weight 0.00001 \
+  --llm-reliability-weight 0.00001 \
+  --vad-contrast-weight 0.00003 \
+  --llm-residual-init 0.03 \
+  --llm-min-quality 0.65 \
+  --llm-min-confidence 0.90
